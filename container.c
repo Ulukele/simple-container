@@ -28,6 +28,18 @@ char * const args[] = {
 struct properties { int uid; };
 char container_name[MAX_USERNAME];
 
+int prepare_procfs() {
+    if (mkdir("/proc", 0555) && errno != EEXIST) {
+        perror("unable to create /proc dir");
+	return 1;
+    }
+    if (mount("proc", "/proc", "proc", 0, "")) {
+        perror("unable to mount /proc");
+        return 1;
+    }
+    return 0;
+}
+
 int init_root(int uid) {
     int err = mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL);
     if (err == -1) {
@@ -44,18 +56,14 @@ int init_root(int uid) {
         printf("unable to change directory (./%s): %s\n", container_name, strerror(errno));
 	return 1;
     }
-    if (mkdir("./u", 0777) && errno != EEXIST) {
-        perror("unable to create upper dir");
-        return 1;
-    }
-    if (mkdir("./w", 0777) && errno != EEXIST) {
-        perror("unable to create work dir");
-        return 1;
-    }
-    if (mkdir("./m", 0777) && errno != EEXIST) {
-        perror("unable to create merge dir");
-        return 1;
-    }
+
+    const char dirs[3][4] = {"./u", "./w", "./m"};
+    for (int i = 0; i < 3; ++i) {
+        if (mkdir(dirs[i], 0777) && errno != EEXIST) {
+            printf("unable to create %s dir: %s\n", dirs[i], strerror(errno));
+            return 1;
+        }
+    } 
 
     err = mount("overlay", "./m", "overlay", MS_MGC_VAL, "lowerdir=../alpine,upperdir=./u,workdir=./w");
     printf("mount / to alpine with overlayfs\n");
@@ -86,6 +94,11 @@ int init_root(int uid) {
     }
     printf("go to /\n");
 
+    if (prepare_procfs() != 0) {
+        return 1;
+    }
+    printf("prepare /proc\n");
+
     return 0;
 }
 
@@ -95,7 +108,7 @@ void init_user(int uid) {
     printf("set username: %s\n", container_name);
 }
 
-int child_func(void* arg) {
+int container_init(void* arg) {
 
     // parse params
     struct properties* properties = (struct properties*)arg;
@@ -120,7 +133,7 @@ int main() {
     printf("self pid       %d\n", parent_pid);
 
     struct properties prop = {parent_pid};
-    child_pid = clone(child_func, child_stack + STACK_SIZE, 
+    child_pid = clone(container_init, child_stack + STACK_SIZE, 
 		    CLONE_NEWNET | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | SIGCHLD, &prop);
     printf("container pid  %d\n", child_pid);    
     if (child_pid == -1) {
